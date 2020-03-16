@@ -1,0 +1,5 @@
+{
+  "port": 8080,
+  "apiRootUrl": "wss://api.hitbtc.com/api/2/ws",
+  "trackedTickers": ["BTCUSD","ETHBTC"]
+}
