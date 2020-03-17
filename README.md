@@ -26,7 +26,7 @@ go run main.go
 - [x] Websocket implementation to keep the data in sync
 - [x] Used local cache to store and serve requests
 - [x] Used native HTTP library for handling REST API calls
-- [x] Handled corner cases and the server only responds to GET calls for /currency/ 
+- [x] Handled corner cases, the server only responds to GET calls for /currency/ 
 - [x] Developed separate modules for {config, pricing data, websocket communication} for modularity
 - [ ] Unit tests
 
