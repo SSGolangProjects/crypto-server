@@ -2,108 +2,105 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/gorilla/websocket"
-	"io/ioutil"
+	"github.com/basicsbeauty/crypto-server/config"
+	config2 "github.com/basicsbeauty/crypto-server/config"
+	"github.com/basicsbeauty/crypto-server/price"
+	"github.com/basicsbeauty/crypto-server/wsclient"
 	"log"
+	"net/http"
+	"strconv"
+	"strings"
 )
 
-// Configuration
-const ConfigFileName = "config.json"
-
-// Default values
-const DefaultPort = 8000
-const APIRootUrl = "https://api.hitbtc.com/api/2/public/currency"
-
-type Config struct {
-	PortNumber     int      `json:"port"`
-	APIRootURL     string   `json:"apiRootUrl"`
-	TrackedTickers []string `json:"trackedTickers"`
+func getIdFromPath(path string) (string, error) {
+	const URLSeparator = "/"
+	const MinURLWordCount = 1
+	tokens := strings.Split(path, URLSeparator)
+	if len(tokens) > MinURLWordCount {
+		return tokens[len(tokens)-1], nil
+	} else {
+		return "", errors.New("invalid request URL")
+	}
 }
 
-// Func getConfig return default
-func getConfig() Config {
+func handleGetCurrency(w http.ResponseWriter, r *http.Request) {
 
-	// Setup config with default parameters
-	c := Config{
-		PortNumber: DefaultPort,
-		APIRootURL: APIRootUrl}
-
-	// Check for config file
-	fileData, err := ioutil.ReadFile(ConfigFileName)
+	id, err := getIdFromPath(r.URL.Path)
 	if err != nil {
-		log.Printf("Failed to open config file: %s", ConfigFileName)
-		log.Print("Using default values for config")
-		return c
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(fmt.Sprintf(`{"message": "%s"}`, err.Error())))
 	}
 
-	// Parse file contents by unmarshalling using JSON
-	log.Printf("Parsing config file: %s", ConfigFileName)
-	err = json.Unmarshal(fileData, &c)
-	if err != nil {
-		log.Printf("Failed to parse config file: %s", ConfigFileName)
-		log.Print("Using default values for config")
-		return c
-	}
+	// Convert ticker/id to uppercase
+	id = strings.ToUpper(id)
 
-	return c
-}
-
-// WebSocket setup
-func setWebSocketClient(config Config) {
-	log.Printf("Connecting to server: %s\n", config.APIRootURL)
-
-	// Connection
-	c, _, err := websocket.DefaultDialer.Dial(config.APIRootURL, nil)
-	if err != nil {
-		log.Fatal("dial:", err)
-	}
-	defer c.Close()
-
-	// Subscribe tickers
-	for _, ticker := range config.TrackedTickers {
-
-		// Build the message
-		message := fmt.Sprintf("{\"method\":\"subscribeTicker\",\"params\":{\"symbol\":\"%s\"},\"id\":786}", ticker)
-		jsonPayload, _ := json.Marshal(message)
-		log.Printf("WebSocket: Client: Ticker: %s Subscribing with payload: %s\n", ticker, message)
-		log.Printf("WebSocket: Client: Ticker: %s Subscribing with payload: %s\n", ticker, string(jsonPayload))
-
-		//jsonPayload, _ := json.Marshal(message)
-		err := c.WriteMessage(websocket.TextMessage, jsonPayload)
+	// Check if the ticker is valid
+	log.Printf("handleGetCurrency: Check if ticker: %s is valid\n", id)
+	if price.IsSymbolSupported(id) {
+		pricing, err := price.GetPricingBySymbol(id)
 		if err != nil {
-			log.Fatalf("WebSocket: Client: Ticker: %s Subscribing FAILED error: %s\n", ticker, err.Error())
-		}
-		log.Printf("WebSocket: Client: Ticker: %s Subscribing Success\n", ticker)
-	}
-
-	// Read notifications
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			_, message, err := c.ReadMessage()
-			if err != nil {
-				log.Printf("WebSocket: Client: Failed to read meassage: Error: %s\n", err.Error())
-			}
-			log.Printf("WebSocket: Client: Read meassage: Error: %s\n", string(message))
-		}
-	}()
-
-	for {
-		select {
-		case <-done:
+			log.Printf("handleGetCurrency: Failed to get pricing for ticker: %s error: %s\n", id, err.Error())
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(fmt.Sprintf(`{"message": "Failed to get pricing for ticker: %s error: %s"}`, id, err.Error())))
 			return
 		}
+
+		payload, err := pricing.MarshalJSON()
+		if err != nil {
+			log.Printf("handleGetCurrency: Failed to get pricing for ticker: %s error: %s\n", id, err.Error())
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(fmt.Sprintf(`{"message": "Failed to marshal pricing for ticker: %s error: %s"}`, id, err.Error())))
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write(payload)
+	} else if id == config.GetAllTickerValue {
+		prices := price.GetAllPricing()
+
+		payload, err := json.Marshal(prices)
+		if err != nil {
+			log.Printf("handleGetCurrency: Failed to get pricing for ticker: %s error: %s\n", id, err.Error())
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(fmt.Sprintf(`{"message": "Failed to marshal pricing for ticker: %s error: %s"}`, id, err.Error())))
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		w.Write(payload)
+	} else {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(fmt.Sprintf(`{"message": "Ticker: %s is not supported"}`, id)))
 	}
+}
+
+func handleCurrency(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Method {
+	case "GET":
+		handleGetCurrency(w, r)
+	default:
+		w.WriteHeader(http.StatusNotImplemented)
+		w.Write([]byte(`{"message": "Operation not supported"}`))
+	}
+}
+
+func startServer(config config.Config) {
+
+	const ApplicationName = "Toyota Test Crypto Server"
+
+	http.HandleFunc("/currency/", handleCurrency)
+	log.Printf("Starting service: %s, running on port: %d", ApplicationName, config.PortNumber)
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", strconv.Itoa(config.PortNumber)), nil))
 }
 
 func main() {
 
-	c := getConfig()
+	c := config2.GetConfig()
+	log.Printf("Server configuration: %+v \n", c)
 
-	bc, _ := json.Marshal(c)
-	log.Printf("Server configuration: %s \n", string(bc))
-
-	setWebSocketClient(c)
+	go wsclient.StartWebSocketClient(c)
+	startServer(c)
 }
